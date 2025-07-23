@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export:*)",
+      "Bash(timeout 120 julia:*)",
+      "Bash(timeout:*)",
+      "Bash(julia:*)",
+      "WebFetch(domain:www.freddiemac.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:freddiemac.embs.com)",
+      "Bash(rm:*)",
+      "Bash(awk:*)",
+      "Bash(grep:*)",
+      "Bash(mkdir:*)",
+      "Bash(mv:*)"
+    ],
+    "deny": []
+  }
+}
