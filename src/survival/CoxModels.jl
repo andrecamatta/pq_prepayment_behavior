@@ -4,6 +4,7 @@ Implementação de modelos Cox para análise de pré-pagamento
 
 using Survival  # Biblioteca oficial de análise de sobrevivência
 using Statistics  # Para mean()
+using LinearAlgebra  # Para rank()
 
 struct CoxPrepaymentModel
     formula::String  # Simplified as string instead of FormulaTerm
@@ -14,6 +15,8 @@ struct CoxPrepaymentModel
     loglikelihood::Float64
     n_events::Int
     n_observations::Int
+    # Normalization parameters for continuous variables
+    normalization_params::Dict{Symbol, Tuple{Float64, Float64}}  # (mean, std)
 end
 
 function fit_cox_model(data::LoanData; 
@@ -46,6 +49,23 @@ function fit_cox_model(data::LoanData;
     end
     
     try
+        # Calculate normalization parameters before preparing data
+        normalization_params = Dict{Symbol, Tuple{Float64, Float64}}()
+        if :interest_rate in covariates
+            normalization_params[:interest_rate] = (mean(data.interest_rate), std(data.interest_rate))
+        end
+        if :credit_score in covariates
+            normalization_params[:credit_score] = (mean(data.credit_score), std(data.credit_score))
+        end
+        
+        # Prepare survival data with normalization
+        survival_df = _prepare_survival_data(data, covariates)
+        
+        # Verificar dados antes de ajustar
+        if any(survival_df.time .<= 0)
+            error("Tempos de sobrevivência inválidos encontrados")
+        end
+        
         # Usar biblioteca oficial Survival.jl
         # Criar EventTime objects
         event_times = [Survival.EventTime(survival_df.time[i], survival_df.event[i]) 
@@ -54,8 +74,19 @@ function fit_cox_model(data::LoanData;
         # Criar matriz de covariáveis
         X = _build_design_matrix_cox(survival_df, covariates)
         
-        # Ajustar modelo Cox usando Survival.jl
+        # Verificar matriz de design
+        if rank(X) < size(X, 2)
+            error("Matriz de covariáveis não tem rank completo")
+        end
+        
+        # Ajustar modelo Cox usando Survival.jl com opções mais robustas
         model = Survival.coxph(X, event_times)
+        
+        # Verificar convergência dos coeficientes
+        if any(abs.(Survival.coef(model)) .> 10.0)
+            @warn "Coeficientes muito altos detectados - possível problema de convergência"
+            println("Coeficientes: ", Survival.coef(model))
+        end
         
         # Extrair baseline hazard usando Breslow
         baseline_hazard, times = _extract_baseline_hazard_survival(model, survival_df, X)
@@ -68,7 +99,8 @@ function fit_cox_model(data::LoanData;
             times,
             Survival.loglikelihood(model),
             sum(survival_df.event),
-            nrow(survival_df)
+            nrow(survival_df),
+            normalization_params
         )
         
     catch e
@@ -137,7 +169,7 @@ function predict_prepayment(model::CoxPrepaymentModel,
     
     # Extract covariates for each loan
     for i in 1:n_loans
-        covariate_dict = _extract_loan_covariates(data, i, model.covariate_names)
+        covariate_dict = _extract_loan_covariates(data, i, model.covariate_names, model)
         
         # Get survival curve for this loan
         survival_probs = survival_curve(model, covariate_dict, 
@@ -179,15 +211,15 @@ function _prepare_survival_data(data::LoanData, covariates::Vector{Symbol})::Dat
                        for i in 1:n]
     dti_ratios = [(monthly_payments[i] * 12) / data.borrower_income[i] for i in 1:n]
     
-    # Build DataFrame with survival data (Brazilian covariates)
+    # Build DataFrame with survival data (Brazilian covariates - normalize continuous variables)
     df = DataFrame(
         loan_id = data.loan_id,
         time = times,
         event = events,
-        interest_rate = data.interest_rate,
+        interest_rate = (data.interest_rate .- mean(data.interest_rate)) ./ std(data.interest_rate),
         loan_amount_log = log.(data.loan_amount),
         loan_term = Float64.(data.loan_term),
-        credit_score = Float64.(data.credit_score),
+        credit_score = (Float64.(data.credit_score) .- mean(data.credit_score)) ./ std(data.credit_score),
         borrower_income_log = log.(data.borrower_income),
         dti_ratio = dti_ratios
     )
@@ -333,16 +365,31 @@ function _calculate_months_between(start_date::Date, end_date::Date)::Float64
 end
 
 function _extract_loan_covariates(data::LoanData, loan_idx::Int, 
-                                 covariate_names::Vector{Symbol})::Dict{Symbol, Float64}
+                                 covariate_names::Vector{Symbol},
+                                 model::CoxPrepaymentModel)::Dict{Symbol, Float64}
     
     # Extract covariates for a specific loan (Brazilian data)
     all_covariates = Dict{Symbol, Float64}()
     
-    # Basic loan characteristics
-    all_covariates[:interest_rate] = data.interest_rate[loan_idx]
+    # Basic loan characteristics (apply normalization from training data)
+    # Apply normalization if parameters exist in model
+    if haskey(model.normalization_params, :interest_rate)
+        mean_val, std_val = model.normalization_params[:interest_rate]
+        all_covariates[:interest_rate] = (data.interest_rate[loan_idx] - mean_val) / std_val
+    else
+        all_covariates[:interest_rate] = data.interest_rate[loan_idx]
+    end
+    
     all_covariates[:loan_amount_log] = log(data.loan_amount[loan_idx])
     all_covariates[:loan_term] = Float64(data.loan_term[loan_idx])
-    all_covariates[:credit_score] = Float64(data.credit_score[loan_idx])
+    
+    if haskey(model.normalization_params, :credit_score)
+        mean_val, std_val = model.normalization_params[:credit_score]
+        all_covariates[:credit_score] = (Float64(data.credit_score[loan_idx]) - mean_val) / std_val
+    else
+        all_covariates[:credit_score] = Float64(data.credit_score[loan_idx])
+    end
+    
     all_covariates[:borrower_income_log] = log(data.borrower_income[loan_idx])
     
     # Calculate DTI

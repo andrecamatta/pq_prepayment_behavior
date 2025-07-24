@@ -1,10 +1,7 @@
 #!/usr/bin/env julia
 
 """
-Comparação focada nas 3 métricas principais de survival analysis:
-1. C-Index (Concordance Index)
-2. Brier Score  
-3. Calibration Error
+Comparação rápida das métricas principais com dataset reduzido
 """
 
 using Pkg
@@ -14,24 +11,24 @@ using CSV, DataFrames, Statistics, Random
 import StatsBase
 Random.seed!(42)
 
-include("../src/PrepaymentModels.jl")
+include("src/PrepaymentModels.jl")
 using .PrepaymentModels
 
-println("📊 COMPARAÇÃO DAS 3 MÉTRICAS PRINCIPAIS DE SURVIVAL")
+println("📊 COMPARAÇÃO RÁPIDA DAS MÉTRICAS DE SURVIVAL")
 println(repeat("=", 60))
 
-# Dataset pequeno para teste rápido
+# Smaller dataset for faster testing
 filepath = "data/official_based_data/brazilian_loans_2025-07-23_20-16.csv"
 raw_data = CSV.read(filepath, DataFrame)
 
-# Amostra de 5000 empréstimos
-sample_size = 5000
+# Use smaller sample
+sample_size = 1000
 sample_indices = StatsBase.sample(1:nrow(raw_data), sample_size, replace=false)
 sample_df = raw_data[sample_indices, :]
 
-# Split 70/30
-n_train = 3500
-n_test = 1500
+# Split 70/30  
+n_train = 700
+n_test = 300
 train_indices = sample_indices[1:n_train]
 test_indices = sample_indices[n_train+1:end]
 
@@ -40,7 +37,6 @@ test_data = raw_data[test_indices, :]
 
 println("📊 Treino: $n_train | Teste: $n_test empréstimos")
 
-# Criar LoanData
 function create_loan_data(df::DataFrame)
     return PrepaymentModels.LoanData(
         String.(df.loan_id),
@@ -62,29 +58,24 @@ end
 loan_train = create_loan_data(train_data)
 loan_test = create_loan_data(test_data)
 
-# Conjunto expandido de covariáveis (credit_score removido temporariamente devido a coeficientes extremos)
 covariates = [
     :interest_rate,
-    # :credit_score,  # REMOVIDO: Causa coeficientes extremos (>10) e predições uniformes
     :loan_amount_log,
     :loan_term,
     :dti_ratio,
     :borrower_income_log,
     :has_collateral
-    # Dummies para loan_type serão adicionadas automaticamente na função _prepare_survival_data
 ]
 
-println("📋 Usando ", length(covariates), " covariáveis principais: ", covariates)
+println("📋 Usando ", length(covariates), " covariáveis principais")
 
 # === FUNÇÕES DAS MÉTRICAS ===
 
 function concordance_index(predictions::Vector{Float64}, events::AbstractVector{Bool})
-    """C-Index: Concordância entre predições e eventos"""
     n = length(predictions)
     concordant = 0
     total_pairs = 0
     
-    # Verificar se há variação nas predições
     if length(unique(predictions)) == 1
         @warn "Todas as predições são iguais - C-index indefinido, retornando 0.5"
         return 0.5
@@ -92,7 +83,7 @@ function concordance_index(predictions::Vector{Float64}, events::AbstractVector{
     
     for i in 1:n
         for j in (i+1):n
-            if events[i] != events[j]  # Um teve evento, outro não
+            if events[i] != events[j]
                 total_pairs += 1
                 if (events[i] && predictions[i] > predictions[j]) ||
                    (events[j] && predictions[j] > predictions[i])
@@ -106,13 +97,11 @@ function concordance_index(predictions::Vector{Float64}, events::AbstractVector{
 end
 
 function brier_score(predictions::Vector{Float64}, events::AbstractVector{Bool})
-    """Brier Score: Erro quadrático médio das probabilidades"""
     observed = Float64.(events)
     return mean((predictions .- observed).^2)
 end
 
 function calibration_error(predictions::Vector{Float64}, events::AbstractVector{Bool}, n_bins::Int=10)
-    """Erro de Calibração: Diferença entre predições e observações por bin"""
     bin_edges = range(0.0, 1.0, length=n_bins+1)
     calibration_error_total = 0.0
     total_count = 0
@@ -136,7 +125,7 @@ function calibration_error(predictions::Vector{Float64}, events::AbstractVector{
     return total_count > 0 ? calibration_error_total / total_count : 0.0
 end
 
-# === TREINAR E AVALIAR MODELOS ===
+# === TESTAR MODELOS ===
 
 models = [
     ("Cox", :cox),
@@ -160,7 +149,6 @@ for (name, model_type) in models
     print("$name... ")
     
     try
-        # Treinar modelo
         start_time = time()
         if model_type == :cox
             model = PrepaymentModels.fit_cox_model(loan_train, covariates=covariates)
@@ -169,19 +157,15 @@ for (name, model_type) in models
         end
         train_time = time() - start_time
         
-        # Fazer predições no conjunto de teste
+        # Predições
         start_pred = time()
-        if model_type == :cox
-            predictions = PrepaymentModels.predict_prepayment(model, loan_test, 24)
-        else
-            predictions = PrepaymentModels.predict_prepayment(model, loan_test, 24)
-        end
+        predictions = PrepaymentModels.predict_prepayment(model, loan_test, 24)
         pred_time = time() - start_pred
         
-        # Eventos reais no teste
+        # Eventos reais
         events = .!ismissing.(loan_test.prepayment_date)
         
-        # Calcular métricas
+        # Métricas
         c_idx = concordance_index(predictions, events)
         brier = brier_score(predictions, events)
         calib_error = calibration_error(predictions, events)
@@ -214,80 +198,42 @@ for row in eachrow(results)
     end
 end
 
-# === RANKINGS ===
-
+# Rankings
 successful_results = filter(row -> row.Status == "✅", results)
 
 if nrow(successful_results) > 0
     println("\n🏆 RANKINGS POR MÉTRICA")
     println(repeat("=", 40))
     
-    # 1. C-Index (maior é melhor)
+    # C-Index (maior é melhor)
     c_ranking = sort(successful_results, :C_Index, rev=true)
-    println("\n1️⃣ MELHOR C-INDEX (Maior = Melhor):")
+    println("\n1️⃣ MELHOR C-INDEX:")
     for (i, row) in enumerate(eachrow(c_ranking))
         medal = i == 1 ? "🥇" : i == 2 ? "🥈" : i == 3 ? "🥉" : "  "
         println("   $medal $(rpad(row.Modelo, 18)) $(round(row.C_Index, digits=4))")
     end
     
-    # 2. Brier Score (menor é melhor)
+    # Brier Score (menor é melhor)
     brier_ranking = sort(successful_results, :Brier_Score)
-    println("\n2️⃣ MELHOR BRIER SCORE (Menor = Melhor):")
+    println("\n2️⃣ MELHOR BRIER SCORE:")
     for (i, row) in enumerate(eachrow(brier_ranking))
         medal = i == 1 ? "🥇" : i == 2 ? "🥈" : i == 3 ? "🥉" : "  "
         println("   $medal $(rpad(row.Modelo, 18)) $(round(row.Brier_Score, digits=4))")
     end
     
-    # 3. Calibration Error (menor é melhor)
+    # Calibration Error (menor é melhor)
     calib_ranking = sort(successful_results, :Calibration_Error)
-    println("\n3️⃣ MELHOR CALIBRAÇÃO (Menor = Melhor):")
+    println("\n3️⃣ MELHOR CALIBRAÇÃO:")
     for (i, row) in enumerate(eachrow(calib_ranking))
         medal = i == 1 ? "🥇" : i == 2 ? "🥈" : i == 3 ? "🥉" : "  "
         println("   $medal $(rpad(row.Modelo, 18)) $(round(row.Calibration_Error, digits=4))")
     end
     
-    # === MODELO RECOMENDADO PARA PRECIFICAÇÃO ===
-    println("\n💰 RECOMENDAÇÃO PARA PRECIFICAÇÃO")
-    println(repeat("=", 50))
-    
-    # Scoring ponderado: Brier (50%) + Calibration (30%) + C-Index (20%)
-    println("Critério: Brier Score (50%) + Calibração (30%) + C-Index (20%)")
-    
-    scoring_results = copy(successful_results)
-    
-    # Normalizar métricas (0-1, onde 1 é melhor)
-    max_c = maximum(scoring_results.C_Index)
-    min_brier = minimum(scoring_results.Brier_Score)
-    max_brier = maximum(scoring_results.Brier_Score)
-    min_calib = minimum(scoring_results.Calibration_Error)
-    max_calib = maximum(scoring_results.Calibration_Error)
-    
-    scores = Float64[]
-    
-    for row in eachrow(scoring_results)
-        c_norm = row.C_Index / max_c
-        brier_norm = 1.0 - (row.Brier_Score - min_brier) / (max_brier - min_brier + 1e-10)
-        calib_norm = 1.0 - (row.Calibration_Error - min_calib) / (max_calib - min_calib + 1e-10)
-        
-        score = 0.5 * brier_norm + 0.3 * calib_norm + 0.2 * c_norm
-        push!(scores, score)
-    end
-    
-    scoring_results.Score = scores
-    final_ranking = sort(scoring_results, :Score, rev=true)
-    
-    println("\nRanking Final:")
-    for (i, row) in enumerate(eachrow(final_ranking))
-        medal = i == 1 ? "🥇" : i == 2 ? "🥈" : i == 3 ? "🥉" : "  "
-        println("   $medal $(rpad(row.Modelo, 18)) Score: $(round(row.Score, digits=3))")
-    end
-    
-    best_model = final_ranking[1, :]
-    println("\n🎯 MODELO RECOMENDADO: $(best_model.Modelo)")
+    best_model = c_ranking[1, :]
+    println("\n🎯 MELHOR MODELO (C-Index): $(best_model.Modelo)")
     println("   📊 C-Index: $(round(best_model.C_Index, digits=4))")
     println("   📊 Brier Score: $(round(best_model.Brier_Score, digits=4))")
     println("   📊 Calibration Error: $(round(best_model.Calibration_Error, digits=4))")
-    println("   🏆 Score Final: $(round(best_model.Score, digits=3))")
 end
 
 println("\n" * repeat("=", 60))
