@@ -15,15 +15,13 @@ struct CoxPrepaymentModel
     loglikelihood::Float64
     n_events::Int
     n_observations::Int
-    # Normalization parameters for continuous variables
-    normalization_params::Dict{Symbol, Tuple{Float64, Float64}}  # (mean, std)
+    # Centralized feature transformer
+    feature_transformer::FeatureTransformer
 end
 
 function fit_cox_model(data::LoanData; 
                       covariates::Vector{Symbol}=Symbol[],
                       stratify_by::Union{Symbol, Nothing}=nothing)::CoxPrepaymentModel
-    
-    survival_df = _prepare_survival_data(data, covariates)
     
     if isempty(covariates)
         # Modelo nulo - apenas intercepto
@@ -49,17 +47,12 @@ function fit_cox_model(data::LoanData;
     end
     
     try
-        # Calculate normalization parameters before preparing data
-        normalization_params = Dict{Symbol, Tuple{Float64, Float64}}()
-        if :interest_rate in covariates
-            normalization_params[:interest_rate] = (mean(data.interest_rate), std(data.interest_rate))
-        end
-        if :credit_score in covariates
-            normalization_params[:credit_score] = (mean(data.credit_score), std(data.credit_score))
-        end
+        # Initialize and fit feature transformer
+        transformer = FeatureTransformer(covariates)
+        fitted_transformer = fit!(transformer, data)
         
-        # Prepare survival data with normalization
-        survival_df = _prepare_survival_data(data, covariates)
+        # Transform data using the fitted transformer
+        survival_df = _prepare_survival_data(data, fitted_transformer)
         
         # Verificar dados antes de ajustar
         if any(survival_df.time .<= 0)
@@ -91,16 +84,19 @@ function fit_cox_model(data::LoanData;
         # Extrair baseline hazard usando Breslow
         baseline_hazard, times = _extract_baseline_hazard_survival(model, survival_df, X)
         
+        # Store expanded covariate names instead of original ones
+        expanded_covariates = PrepaymentModels.get_expanded_covariate_names(covariates)
+        
         return CoxPrepaymentModel(
             formula_str,
-            covariates,  # Store the covariate names
+            expanded_covariates,  # Store the expanded covariate names
             Survival.coef(model),
             baseline_hazard,
             times,
             Survival.loglikelihood(model),
             sum(survival_df.event),
             nrow(survival_df),
-            normalization_params
+            fitted_transformer # Store the fitted transformer
         )
         
     catch e
@@ -160,6 +156,8 @@ function cumulative_hazard(model::CoxPrepaymentModel,
     return hr .* cumhaz_interp
 end
 
+# Function moved to FeatureTransformer.jl
+
 function predict_prepayment(model::CoxPrepaymentModel,
                            data::LoanData,
                            prediction_horizon::Int=36)::Vector{Float64}
@@ -167,12 +165,22 @@ function predict_prepayment(model::CoxPrepaymentModel,
     n_loans = length(data.loan_id)
     predictions = Vector{Float64}(undef, n_loans)
     
-    # Extract covariates for each loan
+    # Extract covariates for each loan using centralized transformer
     for i in 1:n_loans
-        covariate_dict = _extract_loan_covariates(data, i, model.covariate_names, model)
+        covariate_dict = transform_single(model.feature_transformer, data, i)
+        
+        # Filter to only model covariates
+        model_covariates = Dict{Symbol, Float64}()
+        for covar_name in model.covariate_names
+            if haskey(covariate_dict, covar_name)
+                model_covariates[covar_name] = covariate_dict[covar_name]
+            else
+                model_covariates[covar_name] = 0.0
+            end
+        end
         
         # Get survival curve for this loan
-        survival_probs = survival_curve(model, covariate_dict, 
+        survival_probs = survival_curve(model, model_covariates, 
                                       times=collect(1.0:prediction_horizon))
         
         # Probability of prepayment within horizon
@@ -182,7 +190,7 @@ function predict_prepayment(model::CoxPrepaymentModel,
     return predictions
 end
 
-function _prepare_survival_data(data::LoanData, covariates::Vector{Symbol})::DataFrame
+function _prepare_survival_data(data::LoanData, transformer::FeatureTransformer)::DataFrame
     n = length(data.loan_id)
     
     # Calculate time to event (months from origination)
@@ -191,57 +199,31 @@ function _prepare_survival_data(data::LoanData, covariates::Vector{Symbol})::Dat
     
     for i in 1:n
         if !ismissing(data.prepayment_date[i])
-            # Prepayment occurred - calcular meses reais
-            times[i] = _calculate_months_between(data.origination_date[i], data.prepayment_date[i])
+            # Prepayment occurred
+            times[i] = _calculate_time_difference(data.origination_date[i], data.prepayment_date[i])
             events[i] = true
         elseif !ismissing(data.default_date[i])
             # Default occurred (competing risk - censored for prepayment)
-            times[i] = _calculate_months_between(data.origination_date[i], data.default_date[i])
+            times[i] = _calculate_time_difference(data.origination_date[i], data.default_date[i])
             events[i] = false
         else
             # Right censored (loan still active or data cutoff)
-            times[i] = _calculate_months_between(data.origination_date[i], Date(2024, 12, 31))
+            times[i] = _calculate_time_difference(data.origination_date[i], Date(2024, 12, 31))
             events[i] = false
         end
     end
     
-    # Calculate DTI (Debt-to-Income ratio) for Brazilian data
-    monthly_payments = [(data.loan_amount[i] * (data.interest_rate[i]/100/12)) / 
-                       (1 - (1 + data.interest_rate[i]/100/12)^(-data.loan_term[i]))
-                       for i in 1:n]
-    dti_ratios = [(monthly_payments[i] * 12) / data.borrower_income[i] for i in 1:n]
+    # Use centralized transformer for feature engineering
+    df = transform(transformer, data)
     
-    # Build DataFrame with survival data (Brazilian covariates - normalize continuous variables)
-    df = DataFrame(
-        loan_id = data.loan_id,
-        time = times,
-        event = events,
-        interest_rate = (data.interest_rate .- mean(data.interest_rate)) ./ std(data.interest_rate),
-        loan_amount_log = log.(data.loan_amount),
-        loan_term = Float64.(data.loan_term),
-        credit_score = (Float64.(data.credit_score) .- mean(data.credit_score)) ./ std(data.credit_score),
-        borrower_income_log = log.(data.borrower_income),
-        dti_ratio = dti_ratios
-    )
-    
-    # Add loan type as dummy variables
-    for loan_type in unique(data.loan_type)
-        safe_name = Symbol(replace(loan_type, " " => "_"))
-        df[!, safe_name] = Float64.(data.loan_type .== loan_type)
-    end
-    
-    # Add collateral type as dummy
-    df[!, :has_collateral] = Float64.(data.collateral_type .== "Com Garantia")
-    
-    # Add requested covariates
-    for var in covariates
-        if var in names(data.covariates)
-            df[!, var] = data.covariates[!, var]
-        end
-    end
+    # Add survival data
+    df[!, :loan_id] = data.loan_id
+    df[!, :time] = times
+    df[!, :event] = events
     
     return df
 end
+
 
 # Função removida - usar apenas Survival.jl
 
@@ -306,116 +288,37 @@ function _interpolate_hazard(time_points::Vector{Float64},
 end
 
 function _build_design_matrix_cox(df::DataFrame, covariate_names::Vector{Symbol})::Matrix{Float64}
+    # Use unified expansion function
+    expanded_covariates = PrepaymentModels.get_expanded_covariate_names(covariate_names)
+    
     n = nrow(df)
-    p = length(covariate_names)
+    p = length(expanded_covariates)
     X = Matrix{Float64}(undef, n, p)
     
-    for (j, var) in enumerate(covariate_names)
-        if var == :credit_score
-            # Normalizar credit score para melhor convergência
-            X[:, j] = (df[!, var] .- 700.0) ./ 100.0
-        elseif var == :interest_rate  
-            # Centrar taxa de juros
-            X[:, j] = df[!, var] .- mean(df[!, var])
-        else
+    for (j, var) in enumerate(expanded_covariates)
+        if string(var) in names(df)
             X[:, j] = df[!, var]
+        else
+            @warn "Covariate $var not found in DataFrame (available: $(names(df)[1:min(10, end)]))"
+            X[:, j] .= 0.0
         end
     end
     
     return X
 end
 
-function _calculate_months_between(start_date::Date, end_date::Date)::Float64
+function _calculate_time_difference(start_date::Date, end_date::Date)::Float64
     """
-    Calcula diferença em meses entre duas datas de forma precisa
-    Não assume que todos os meses têm 30 dias
+    Calcula diferença entre datas em unidades de tempo simplificadas.
+    Retorna dias divididos por 30.44 (média de dias por mês) para compatibilidade com código existente.
     """
-    
     if end_date <= start_date
         return 0.0
     end
     
-    # Calcular diferença em anos e meses
-    years_diff = Dates.year(end_date) - Dates.year(start_date)
-    months_diff = Dates.month(end_date) - Dates.month(start_date)
-    
-    # Total de meses inteiros
-    total_months = years_diff * 12 + months_diff
-    
-    # Ajustar para dias dentro do mês
-    start_day = Dates.day(start_date)
-    end_day = Dates.day(end_date)
-    
-    if end_day >= start_day
-        # Mesmo dia ou mais tarde no mês
-        days_fraction = (end_day - start_day) / Dates.daysinmonth(end_date)
-        return Float64(total_months) + days_fraction
-    else
-        # Dia anterior no mês - subtrair um mês e calcular fração
-        total_months -= 1
-        
-        # Calcular dias do mês anterior
-        prev_month_date = end_date - Month(1)
-        days_in_prev_month = Dates.daysinmonth(prev_month_date)
-        days_from_start = days_in_prev_month - start_day + end_day
-        days_fraction = days_from_start / days_in_prev_month
-        
-        return Float64(total_months) + days_fraction
-    end
+    # Diferença em dias, convertida para "meses" aproximados 
+    days_diff = (end_date - start_date).value
+    return Float64(days_diff) / 30.44  # Média de dias por mês (365.25/12)
 end
 
-function _extract_loan_covariates(data::LoanData, loan_idx::Int, 
-                                 covariate_names::Vector{Symbol},
-                                 model::CoxPrepaymentModel)::Dict{Symbol, Float64}
-    
-    # Extract covariates for a specific loan (Brazilian data)
-    all_covariates = Dict{Symbol, Float64}()
-    
-    # Basic loan characteristics (apply normalization from training data)
-    # Apply normalization if parameters exist in model
-    if haskey(model.normalization_params, :interest_rate)
-        mean_val, std_val = model.normalization_params[:interest_rate]
-        all_covariates[:interest_rate] = (data.interest_rate[loan_idx] - mean_val) / std_val
-    else
-        all_covariates[:interest_rate] = data.interest_rate[loan_idx]
-    end
-    
-    all_covariates[:loan_amount_log] = log(data.loan_amount[loan_idx])
-    all_covariates[:loan_term] = Float64(data.loan_term[loan_idx])
-    
-    if haskey(model.normalization_params, :credit_score)
-        mean_val, std_val = model.normalization_params[:credit_score]
-        all_covariates[:credit_score] = (Float64(data.credit_score[loan_idx]) - mean_val) / std_val
-    else
-        all_covariates[:credit_score] = Float64(data.credit_score[loan_idx])
-    end
-    
-    all_covariates[:borrower_income_log] = log(data.borrower_income[loan_idx])
-    
-    # Calculate DTI
-    monthly_payment = (data.loan_amount[loan_idx] * (data.interest_rate[loan_idx]/100/12)) / 
-                     (1 - (1 + data.interest_rate[loan_idx]/100/12)^(-data.loan_term[loan_idx]))
-    all_covariates[:dti_ratio] = (monthly_payment * 12) / data.borrower_income[loan_idx]
-    
-    # Loan type dummies
-    for loan_type in ["Crédito Pessoal", "Cartão de Crédito", "Cheque Especial", "CDC Veículo"]
-        safe_name = Symbol(replace(loan_type, " " => "_"))
-        all_covariates[safe_name] = Float64(data.loan_type[loan_idx] == loan_type)
-    end
-    
-    # Collateral
-    all_covariates[:has_collateral] = Float64(data.collateral_type[loan_idx] == "Com Garantia")
-    
-    # Return only the covariates that were used in the model
-    model_covariates = Dict{Symbol, Float64}()
-    for covar_name in covariate_names
-        if haskey(all_covariates, covar_name)
-            model_covariates[covar_name] = all_covariates[covar_name]
-        else
-            @warn "Covariate $covar_name not found in loan data for loan $loan_idx"
-            model_covariates[covar_name] = 0.0  # Default value
-        end
-    end
-    
-    return model_covariates
-end
+# Function removed - now using centralized FeatureTransformer

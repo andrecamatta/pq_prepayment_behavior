@@ -7,8 +7,35 @@ using LinearAlgebra: dot
 using SpecialFunctions: loggamma, logbeta, erf, erfc
 using Optim: optimize, BFGS, NelderMead, converged, minimizer
 using Optim
+using Statistics: mean, std, quantile
+using Dates: Month
 
 abstract type ParametricSurvivalModel end
+
+function add_l2_regularization(likelihood::Float64, coefficients::Vector{Float64}, 
+                              regularization::Float64, exclude_indices::Vector{Int}=[1])::Float64
+    """
+    Add L2 regularization penalty to likelihood.
+    
+    Args:
+        likelihood: Base log-likelihood value
+        coefficients: Model coefficients to regularize
+        regularization: Regularization strength (λ)
+        exclude_indices: Indices to exclude from regularization (default: [1] for intercept)
+    
+    Returns:
+        Regularized log-likelihood
+    """
+    if regularization <= 0.0
+        return likelihood
+    end
+    
+    # Apply regularization only to specified coefficients (exclude intercept by default)
+    reg_indices = setdiff(1:length(coefficients), exclude_indices)
+    reg_penalty = regularization * sum(coefficients[reg_indices].^2)
+    
+    return likelihood - reg_penalty
+end
 
 struct WeibullPrepaymentModel <: ParametricSurvivalModel
     shape::Float64
@@ -17,6 +44,7 @@ struct WeibullPrepaymentModel <: ParametricSurvivalModel
     loglikelihood::Float64
     aic::Float64
     n_observations::Int
+    feature_transformer::FeatureTransformer  # Centralized transformer
 end
 
 struct LogNormalPrepaymentModel <: ParametricSurvivalModel
@@ -26,9 +54,9 @@ struct LogNormalPrepaymentModel <: ParametricSurvivalModel
     loglikelihood::Float64
     aic::Float64
     n_observations::Int
+    feature_transformer::FeatureTransformer  # Centralized transformer
 end
 
-# BernoulliBetaPrepaymentModel removido - use OptimizedBernoulliBetaModel
 
 struct OptimizedBernoulliBetaModel <: ParametricSurvivalModel
     # Componentes do modelo
@@ -46,6 +74,7 @@ struct OptimizedBernoulliBetaModel <: ParametricSurvivalModel
     
     # Parâmetros de regularização
     regularization_strength::Float64
+    feature_transformer::FeatureTransformer  # Centralized transformer
 end
 
 function fit_parametric_model(data::LoanData;
@@ -55,21 +84,26 @@ function fit_parametric_model(data::LoanData;
     
     @assert distribution in [:weibull, :lognormal, :loglogistic, :bernoulli_beta_optimized]
     
-    # Use the same survival data preparation as Cox model
-    survival_df = PrepaymentModels._prepare_survival_data(data, covariates)
+    # Initialize and fit feature transformer
+    transformer = FeatureTransformer(covariates)
+    fitted_transformer = fit!(transformer, data)
+    
+    # Transform data using the fitted transformer
+    survival_df = _prepare_survival_data_parametric(data, fitted_transformer)
     
     if distribution == :weibull
-        return _fit_weibull_model(survival_df, covariates)
+        return _fit_weibull_model(survival_df, covariates, fitted_transformer, regularization)
     elseif distribution == :lognormal
-        return _fit_lognormal_model(survival_df, covariates)
+        return _fit_lognormal_model(survival_df, covariates, fitted_transformer, regularization)
     elseif distribution == :bernoulli_beta_optimized
-        return _fit_optimized_bernoulli_beta(data, covariates, regularization)
+        return _fit_optimized_bernoulli_beta(data, covariates, regularization, fitted_transformer)
     else
-        return _fit_loglogistic_model(survival_df, covariates)
+        return _fit_loglogistic_model(survival_df, covariates, fitted_transformer)
     end
 end
 
-function _fit_weibull_model(data::DataFrame, covariates::Vector{Symbol})::WeibullPrepaymentModel
+function _fit_weibull_model(data::DataFrame, covariates::Vector{Symbol}, 
+                            fitted_transformer::FeatureTransformer, regularization::Float64=0.01)::WeibullPrepaymentModel
     # Weibull AFT model: log(T) = μ + σ * ε
     # where μ = X'β (linear predictor) and ε ~ Gumbel(0,1)
     
@@ -95,7 +129,9 @@ function _fit_weibull_model(data::DataFrame, covariates::Vector{Symbol})::Weibul
             if θ[end] <= 0.001  # Evitar σ muito pequeno
                 return 1e6
             end
-            return -_weibull_loglikelihood(θ, data, X)
+            ll = _weibull_loglikelihood(θ, data, X)
+            regularized_ll = add_l2_regularization(ll, θ[1:p], regularization)
+            return -regularized_ll
         catch e
             return 1e6  # Retornar valor alto se houver erro numérico
         end
@@ -131,12 +167,16 @@ function _fit_weibull_model(data::DataFrame, covariates::Vector{Symbol})::Weibul
     shape = 1.0 / σ_hat
     aic = -2 * ll + 2 * (p + 1)
     
+    # Store expanded covariate names instead of original ones
+    expanded_covariates = PrepaymentModels.get_expanded_covariate_names(covariates)
+    
     return WeibullPrepaymentModel(
-        shape, β_hat, covariates, ll, aic, n
+        shape, β_hat, expanded_covariates, ll, aic, n, fitted_transformer
     )
 end
 
-function _fit_lognormal_model(data::DataFrame, covariates::Vector{Symbol})::LogNormalPrepaymentModel
+function _fit_lognormal_model(data::DataFrame, covariates::Vector{Symbol}, 
+                              fitted_transformer::FeatureTransformer, regularization::Float64=0.01)::LogNormalPrepaymentModel
     # Log-normal AFT model: log(T) = μ + σ * ε
     # where μ = X'β and ε ~ N(0,1)
     
@@ -191,7 +231,8 @@ function _fit_lognormal_model(data::DataFrame, covariates::Vector{Symbol})::LogN
                 return 1e6
             end
             
-            return -ll
+            regularized_ll = add_l2_regularization(ll, θ[1:p], regularization)
+            return -regularized_ll
         catch e
             return 1e6
         end
@@ -236,12 +277,14 @@ function _fit_lognormal_model(data::DataFrame, covariates::Vector{Symbol})::LogN
     
     aic = -2 * ll + 2 * (p + 1)
     
+    # Store expanded covariate names instead of original ones
+    expanded_covariates = PrepaymentModels.get_expanded_covariate_names(covariates)
+    
     return LogNormalPrepaymentModel(
-        β_hat, σ_hat, covariates, ll, aic, n
+        β_hat, σ_hat, expanded_covariates, ll, aic, n, fitted_transformer
     )
 end
 
-# _fit_bernoulli_beta_model removido - use _fit_optimized_bernoulli_beta
 
 function _weibull_loglikelihood(θ::Vector{Float64}, data::DataFrame, X::Matrix{Float64})::Float64
     p = size(X, 2)
@@ -406,13 +449,15 @@ function median_survival_time(model::LogNormalPrepaymentModel,
 end
 
 function _build_design_matrix(data::DataFrame, covariates::Vector{Symbol})::Matrix{Float64}
+    # Use unified expansion function
+    expanded_covariates = PrepaymentModels.get_expanded_covariate_names(covariates)
+    
     n = nrow(data)
-    p = length(covariates) + 1  # +1 for intercept
+    p = length(expanded_covariates) + 1  # +1 for intercept
     
     X = ones(n, p)  # Initialize with intercept
     
-    for (i, var) in enumerate(covariates)
-        # Convert Symbol to String for comparison with names()
+    for (i, var) in enumerate(expanded_covariates)
         var_str = string(var)
         if var_str in names(data)
             X[:, i+1] = data[!, var]
@@ -425,12 +470,12 @@ function _build_design_matrix(data::DataFrame, covariates::Vector{Symbol})::Matr
     return X
 end
 
-function _fit_optimized_bernoulli_beta(data::LoanData, covariates::Vector{Symbol}, regularization::Float64)::OptimizedBernoulliBetaModel
+function _fit_optimized_bernoulli_beta(data::LoanData, covariates::Vector{Symbol}, regularization::Float64, fitted_transformer::FeatureTransformer)::OptimizedBernoulliBetaModel
     """
     Modelo Bernoulli-Beta com MLE real para parâmetros otimizados
     """
     
-    survival_df = PrepaymentModels._prepare_survival_data(data, covariates)
+    survival_df = _prepare_survival_data_parametric(data, fitted_transformer)
     n = nrow(survival_df)
     X = _build_design_matrix(survival_df, covariates)
     p = size(X, 2)
@@ -594,10 +639,13 @@ function _fit_optimized_bernoulli_beta(data::LoanData, covariates::Vector{Symbol
     println("         Beta α intercept: $(round(exp(γ_α_hat[1]), digits=3))")
     println("         Beta β intercept: $(round(exp(γ_β_hat[1]), digits=3))")
     
+    # Store expanded covariate names instead of original ones
+    expanded_covariates = PrepaymentModels.get_expanded_covariate_names(covariates)
+    
     return OptimizedBernoulliBetaModel(
         β_hat, γ_α_hat, γ_β_hat, 
-        covariates, ll_regularized, aic, bic, n, n_events,
-        regularization
+        expanded_covariates, ll_regularized, aic, bic, n, n_events,
+        regularization, fitted_transformer
     )
 end
 
@@ -672,7 +720,6 @@ function _bernoulli_beta_loglikelihood(β::Vector{Float64}, γ_α::Vector{Float6
     return ll
 end
 
-# Funções do BB original removidas - use OptimizedBernoulliBetaModel
 
 # === FUNÇÕES DE PREDIÇÃO ===
 
@@ -684,7 +731,17 @@ function predict_prepayment(model::WeibullPrepaymentModel,
     predictions = Vector{Float64}(undef, n_loans)
     
     for i in 1:n_loans
-        covariate_dict = _extract_loan_covariates_parametric(data, i, model.covariate_names)
+        covariate_dict = transform_single(model.feature_transformer, data, i)
+        # Filter to only model covariates
+        model_covariates = Dict{Symbol, Float64}()
+        for covar_name in model.covariate_names
+            if haskey(covariate_dict, covar_name)
+                model_covariates[covar_name] = covariate_dict[covar_name]
+            else
+                model_covariates[covar_name] = 0.0
+            end
+        end
+        covariate_dict = model_covariates
         
         # Calculate survival probability at horizon
         survival_prob = survival_probability(model, covariate_dict, Float64(prediction_horizon))
@@ -704,7 +761,17 @@ function predict_prepayment(model::LogNormalPrepaymentModel,
     predictions = Vector{Float64}(undef, n_loans)
     
     for i in 1:n_loans
-        covariate_dict = _extract_loan_covariates_parametric(data, i, model.covariate_names)
+        covariate_dict = transform_single(model.feature_transformer, data, i)
+        # Filter to only model covariates
+        model_covariates = Dict{Symbol, Float64}()
+        for covar_name in model.covariate_names
+            if haskey(covariate_dict, covar_name)
+                model_covariates[covar_name] = covariate_dict[covar_name]
+            else
+                model_covariates[covar_name] = 0.0
+            end
+        end
+        covariate_dict = model_covariates
         
         # Calculate survival probability at horizon
         survival_prob = survival_probability(model, covariate_dict, Float64(prediction_horizon))
@@ -716,7 +783,6 @@ function predict_prepayment(model::LogNormalPrepaymentModel,
     return predictions
 end
 
-# predict_prepayment para BB original removido - use OptimizedBernoulliBetaModel
 
 function predict_prepayment(model::OptimizedBernoulliBetaModel,
                            data::LoanData,
@@ -726,54 +792,102 @@ function predict_prepayment(model::OptimizedBernoulliBetaModel,
     predictions = Vector{Float64}(undef, n_loans)
     
     for i in 1:n_loans
-        covariate_dict = _extract_loan_covariates_parametric(data, i, model.covariate_names)
+        covariate_dict = transform_single(model.feature_transformer, data, i)
+        # Filter to only model covariates
+        model_covariates = Dict{Symbol, Float64}()
+        for covar_name in model.covariate_names
+            if haskey(covariate_dict, covar_name)
+                model_covariates[covar_name] = covariate_dict[covar_name]
+            else
+                model_covariates[covar_name] = 0.0
+            end
+        end
+        covariate_dict = model_covariates
         
-        # Simple prediction based on Bernoulli component (probability of prepayment)
+        # Build design vector
         x = [1.0]  # Intercept
         for var in model.covariate_names
             push!(x, get(covariate_dict, var, 0.0))
         end
         
-        # Logistic probability
+        # Bernoulli probability (will prepay at some point)
         logit_p = dot(x, model.bernoulli_coefficients)
-        prepayment_prob = 1.0 / (1.0 + exp(-logit_p))
+        p_prepay = 1.0 / (1.0 + exp(-logit_p))
         
-        predictions[i] = prepayment_prob
+        # Contract duration
+        contract_length = Float64(data.loan_term[i])
+        
+        if prediction_horizon >= contract_length
+            # Horizon extends beyond contract end - use full Bernoulli probability
+            predictions[i] = p_prepay
+        else
+            # Horizon is within contract - use Beta component for timing
+            
+            # Beta parameters
+            log_α = dot(x, model.beta_alpha_coefficients)
+            log_β_param = dot(x, model.beta_beta_coefficients)
+            
+            α_i = exp(min(5.0, max(-5.0, log_α)))
+            β_i = exp(min(5.0, max(-5.0, log_β_param)))
+            
+            # Relative horizon within contract
+            u_horizon = prediction_horizon / contract_length
+            u_horizon = max(0.001, min(0.999, u_horizon))
+            
+            # P(prepayment by horizon) = P(prepay) × P(timing ≤ horizon | prepay)
+            # P(timing ≤ horizon | prepay) = CDF_Beta(u_horizon; α, β)
+            beta_cdf = _beta_cdf(u_horizon, α_i, β_i)
+            
+            predictions[i] = p_prepay * beta_cdf
+        end
     end
     
     return predictions
 end
 
-function _extract_loan_covariates_parametric(data::LoanData, loan_idx::Int, 
-                                           covariate_names::Vector{Symbol})::Dict{Symbol, Float64}
-    
-    # Extract covariates for a specific loan (parametric models)
-    # Use same normalization as Cox model for consistency
-    covariates = Dict{Symbol, Float64}()
-    
-    # Basic loan characteristics with consistent normalization
-    covariates[:interest_rate] = (data.interest_rate[loan_idx] - mean(data.interest_rate)) / std(data.interest_rate)
-    covariates[:loan_amount_log] = log(data.loan_amount[loan_idx])
-    covariates[:loan_term] = Float64(data.loan_term[loan_idx])
-    covariates[:credit_score] = (Float64(data.credit_score[loan_idx]) - mean(data.credit_score)) / std(data.credit_score)
-    covariates[:borrower_income_log] = log(data.borrower_income[loan_idx])
-    
-    # Calculate DTI
-    monthly_payment = (data.loan_amount[loan_idx] * (data.interest_rate[loan_idx]/100/12)) / 
-                     (1 - (1 + data.interest_rate[loan_idx]/100/12)^(-data.loan_term[loan_idx]))
-    covariates[:dti_ratio] = (monthly_payment * 12) / data.borrower_income[loan_idx]
-    
-    # Add collateral indicator
-    covariates[:has_collateral] = Float64(data.collateral_type[loan_idx] == "Com Garantia")
-    
-    # Add loan type dummies
-    for loan_type in ["Crédito Pessoal", "Cartão de Crédito", "Cheque Especial", "CDC Veículo"]
-        safe_name = Symbol(replace(loan_type, " " => "_"))
-        covariates[safe_name] = Float64(data.loan_type[loan_idx] == loan_type)
+function _beta_cdf(x::Float64, α::Float64, β::Float64)::Float64
+    """
+    Calculate CDF of Beta distribution using incomplete beta function
+    CDF_Beta(x; α, β) = I_x(α, β) where I_x is the regularized incomplete beta function
+    """
+    if x <= 0.0
+        return 0.0
+    elseif x >= 1.0
+        return 1.0
+    elseif α <= 0.0 || β <= 0.0
+        return 0.5  # Fallback for invalid parameters
+    else
+        # Use efficient approximation for Beta CDF
+        # For numerical stability, use the relationship with gamma functions
+        try
+            # Simple numerical integration for Beta CDF (Trapezoidal rule)
+            # This is a basic implementation - for production, use SpecialFunctions.jl
+            n_steps = 100
+            dx = x / n_steps
+            integral = 0.0
+            
+            for i in 1:n_steps
+                xi = (i - 0.5) * dx
+                if xi > 0 && xi < 1
+                    # Beta PDF: f(x) = x^(α-1) * (1-x)^(β-1) / B(α,β)
+                    # where B(α,β) = Γ(α)Γ(β)/Γ(α+β)
+                    log_pdf = (α - 1) * log(xi) + (β - 1) * log(1 - xi) - 
+                             (loggamma(α) + loggamma(β) - loggamma(α + β))
+                    if isfinite(log_pdf)
+                        integral += exp(log_pdf) * dx
+                    end
+                end
+            end
+            
+            return min(1.0, max(0.0, integral))
+        catch
+            # Fallback: simple approximation based on mean
+            mean_beta = α / (α + β)
+            return x < mean_beta ? 0.3 : 0.7
+        end
     end
-    
-    return covariates
 end
+
 
 function model_comparison(models::Vector{ParametricSurvivalModel})::DataFrame
     comparison = DataFrame(
@@ -819,3 +933,52 @@ function model_comparison(models::Vector{ParametricSurvivalModel})::DataFrame
     
     return comparison
 end
+
+function _prepare_survival_data_parametric(data::LoanData, fitted_transformer::FeatureTransformer)::DataFrame
+    n = length(data.loan_id)
+    
+    # Calculate time to event (months from origination)
+    times = Vector{Float64}(undef, n)
+    events = Vector{Bool}(undef, n)
+    
+    for i in 1:n
+        if !ismissing(data.prepayment_date[i])
+            # Prepayment occurred
+            times[i] = _calculate_time_difference_parametric(data.origination_date[i], data.prepayment_date[i])
+            events[i] = true
+        elseif !ismissing(data.default_date[i])
+            # Default occurred (competing risk - censored for prepayment)
+            times[i] = _calculate_time_difference_parametric(data.origination_date[i], data.default_date[i])
+            events[i] = false
+        else
+            # Right censored (loan still active or data cutoff)
+            times[i] = _calculate_time_difference_parametric(data.origination_date[i], Date(2024, 12, 31))
+            events[i] = false
+        end
+    end
+    
+    # Use centralized transformer for feature engineering
+    df = PrepaymentModels.transform(fitted_transformer, data)
+    
+    # Add survival data
+    df[!, :loan_id] = data.loan_id
+    df[!, :time] = times
+    df[!, :event] = events
+    
+    return df
+end
+
+function _calculate_time_difference_parametric(start_date::Date, end_date::Date)::Float64
+    """
+    Calcula diferença entre datas em unidades de tempo simplificadas.
+    Retorna dias divididos por 30.44 (média de dias por mês) para compatibilidade.
+    """
+    if end_date <= start_date
+        return 0.0
+    end
+    
+    # Diferença em dias, convertida para "meses" aproximados 
+    days_diff = (end_date - start_date).value
+    return Float64(days_diff) / 30.44  # Média de dias por mês (365.25/12)
+end
+

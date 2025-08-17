@@ -24,14 +24,14 @@ println(repeat("=", 60))
 filepath = "data/official_based_data/brazilian_loans_2025-07-23_20-16.csv"
 raw_data = CSV.read(filepath, DataFrame)
 
-# Amostra de 5000 empréstimos
-sample_size = 5000
+# Amostra de 3000 empréstimos para análise robusta
+sample_size = 3000
 sample_indices = StatsBase.sample(1:nrow(raw_data), sample_size, replace=false)
 sample_df = raw_data[sample_indices, :]
 
 # Split 70/30
-n_train = 3500
-n_test = 1500
+n_train = 2100
+n_test = 900
 train_indices = sample_indices[1:n_train]
 test_indices = sample_indices[n_train+1:end]
 
@@ -62,10 +62,10 @@ end
 loan_train = create_loan_data(train_data)
 loan_test = create_loan_data(test_data)
 
-# Conjunto expandido de covariáveis (credit_score removido temporariamente devido a coeficientes extremos)
+# Conjunto expandido de covariáveis (credit_score readicionado com tratamento não-linear)
 covariates = [
     :interest_rate,
-    # :credit_score,  # REMOVIDO: Causa coeficientes extremos (>10) e predições uniformes
+    :credit_score,  # READICIONADO: Com quantile binning para tratar não-linearidade
     :loan_amount_log,
     :loan_term,
     :dti_ratio,
