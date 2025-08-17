@@ -1,14 +1,15 @@
-# Modelagem de Pré-pagamento Bancário
+# Modelagem de Pré-pagamento Bancário Brasileiro
 
-Implementação de modelos de sobrevivência para análise de comportamento de pré-pagamento em empréstimos bancários usando Julia.
+Implementação robusta de modelos de sobrevivência para análise de comportamento de pré-pagamento em empréstimos bancários brasileiros usando Julia.
 
 ## 📋 Visão Geral
 
-Este projeto implementa modelos estatísticos avançados para prever o comportamento de pré-pagamento em empréstimos bancários, utilizando técnicas de análise de sobrevivência. Os modelos incluem:
+Este projeto implementa modelos estatísticos avançados para prever o comportamento de pré-pagamento em empréstimos bancários brasileiros, utilizando técnicas de análise de sobrevivência com **validação out-of-sample rigorosa**. 
 
-- **Modelo Cox** (Proportional Hazards)
-- **Modelos Paramétricos** (Weibull, Log-Normal)
-- **Modelo Bernoulli-Beta Otimizado**
+### 📊 **Modelos Implementados:**
+- **Modelo Cox** (Partial Likelihood)
+- **Modelos Paramétricos com Regularização L2** (Weibull, Log-Normal)
+- **Modelo Bernoulli-Beta Otimizado** (MLE + Regularização)
 
 ## 🚀 Instalação e Configuração
 
@@ -45,10 +46,12 @@ Para criar um dataset brasileiro baseado em estatísticas oficiais (BCB, IBGE, S
 julia --project=. scripts/create_brazilian_loan_data.jl
 ```
 
-Este script gera dados sintéticos realistas baseados em:
-- Taxas históricas do PMMS (Freddie Mac)
-- Índices de preços habitacionais (FHFA)
-- Distribuições de crédito brasileiras
+Este script gera dados sintéticos realistas baseados em fontes brasileiras oficiais:
+- **Taxas de juros**: BCB Focus (Selic e spreads bancários)
+- **Rendas**: IBGE PNAD Contínua (distribuição real brasileira)
+- **Scores de crédito**: Serasa (0-1000, distribuição atualizada)
+- **Geografia**: IBGE (proporção populacional por estado)
+- **Comportamento**: CDC Art. 52 + sazonalidade brasileira (13º, férias)
 
 ### 2. Exportação para Excel
 
@@ -58,40 +61,49 @@ Para converter os dados CSV para formato Excel com múltiplas planilhas:
 julia --project=. scripts/export_to_excel.jl
 ```
 
-### 3. Comparação de Modelos
+### 3. Comparação Robusta de Modelos
 
-Para executar uma análise completa comparando todos os modelos usando métricas avançadas:
+Para executar uma análise completa comparando todos os modelos com **validação out-of-sample**:
 
 ```bash
 julia --project=. scripts/survival_metrics_comparison.jl
 ```
 
-Este script implementa e compara:
-- **C-Index**: Concordância entre predições e eventos
-- **Brier Score**: Erro quadrático médio das probabilidades
-- **Calibration Error**: Diferença entre predições e observações
+**Pipeline de Validação:**
+- 🔄 **Split 70/30**: 2100 treino / 900 teste
+- 🎯 **Treino**: Apenas dados de treino (sem data leakage)
+- 📊 **Avaliação**: Métricas calculadas apenas em dados de teste
+- ⚖️ **Regularização L2**: Comparação justa entre modelos MLE
+
+**Métricas Out-of-Sample:**
+- **C-Index**: Discriminação entre eventos (0.5-1.0, maior = melhor)
+- **Brier Score**: Calibração probabilística (0-1, menor = melhor)
+- **Calibration Error**: Viés sistemático (0-1, menor = melhor)
 
 ## 🏗️ Estrutura do Projeto
 
 ```
 pq_prepayment_behavior/
 ├── src/                          # Código fonte principal
-│   ├── PrepaymentModels.jl       # Módulo principal
+│   ├── PrepaymentModels.jl       # Módulo principal com expansão credit_score
 │   ├── survival/                 # Modelos de sobrevivência
-│   │   ├── CoxModels.jl         # Modelo Cox
-│   │   ├── ParametricModels.jl  # Modelos paramétricos
-│   │   └── BernoulliBetaOptimized.jl # Modelo Bernoulli-Beta
+│   │   ├── CoxModels.jl         # Modelo Cox (Partial Likelihood)
+│   │   ├── ParametricModels.jl  # Modelos paramétricos + Bernoulli-Beta
+│   │   └── BernoulliBetaOptimized.jl # [Histórico] Integrado em ParametricModels
 │   ├── data/                    # Utilitários de dados
 │   │   └── DataLoader.jl        # Carregamento e pré-processamento
 │   ├── analysis/                # Análises específicas
 │   │   └── PrepaymentAnalysis.jl # Análise comportamental
 │   └── utils/                   # Utilitários gerais
+│       ├── FeatureTransformer.jl # Transformação centralizada de features
 │       └── ValidationUtils.jl   # Validação de modelos
 ├── scripts/                     # Scripts de execução
-│   ├── create_brazilian_loan_data.jl    # Geração de dados
+│   ├── create_brazilian_loan_data.jl    # Geração de dados brasileiros
 │   ├── export_to_excel.jl              # Exportação Excel
-│   └── survival_metrics_comparison.jl   # Comparação de modelos
+│   └── survival_metrics_comparison.jl   # Comparação out-of-sample
 ├── test/                        # Testes unitários
+├── experiments/                 # [Arquivo] Scripts históricos removidos
+│   └── README.md               # Documentação de scripts experimentais
 ├── docs/                        # Documentação
 └── data/                        # Dados gerados (não versionados)
 ```
@@ -99,17 +111,19 @@ pq_prepayment_behavior/
 ## 🔬 Modelos Implementados
 
 ### 1. Modelo Cox (Proportional Hazards)
-- Modelo semi-paramétrico clássico
-- Não assume forma específica para o hazard baseline
-- Ideal para identificar fatores de risco
+- **Método**: Partial Likelihood (não MLE tradicional)
+- **Características**: Semi-paramétrico, baseline hazard livre
+- **Uso**: Ideal para identificar fatores de risco
 
-### 2. Modelos Paramétricos
-- **Weibull**: Flexível para diferentes formas de hazard
-- **Log-Normal**: Adequado para hazards não-monótonos
+### 2. Modelos Paramétricos com Regularização L2
+- **Weibull**: MLE + L2, flexível para diferentes formas de hazard
+- **Log-Normal**: MLE + L2, adequado para hazards não-monótonos
+- **Regularização**: λ=0.01 aplicada aos coeficientes (exceto intercept)
 
 ### 3. Modelo Bernoulli-Beta Otimizado
-- Implementação otimizada para dados de pré-pagamento
-- Incorpora características específicas do comportamento bancário
+- **Método**: MLE com regularização L2 e inicialização inteligente
+- **Componentes**: Probabilidade (Bernoulli) + Timing (Beta)
+- **Vantagens**: Captura comportamento não-linear e timing de pré-pagamento
 
 ## 📈 Métricas de Avaliação
 
@@ -137,11 +151,13 @@ O projeto utiliza métricas estatísticas rigorosas para comparação de modelos
 ## 📚 Dependências Principais
 
 - `DataFrames.jl`: Manipulação de dados
-- `Distributions.jl`: Distribuições estatísticas
-- `StatsBase.jl`: Estatísticas básicas
+- `Survival.jl`: Análise de sobrevivência (Cox models)
+- `Optim.jl`: Otimização MLE para modelos paramétricos
+- `StatsBase.jl`: Estatísticas e métricas de avaliação
 - `CSV.jl`: Leitura/escrita CSV
 - `XLSX.jl`: Exportação Excel
 - `Dates.jl`: Manipulação de datas
+- `SpecialFunctions.jl`: Funções especiais para distribuições
 
 ## 📝 Exemplo de Uso em Código
 
