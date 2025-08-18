@@ -114,6 +114,24 @@ function get_macro_indicator(date::Date, indicator::Symbol)
     return closest_value
 end
 
+function get_selic_rate(date::Date)::Float64
+    """
+    Interpola a taxa Selic para uma data específica usando os dados do BCB
+    """
+    closest_rate = 8.0  # Default fallback
+    min_diff = typemax(Int)
+    
+    for (ref_date, rate) in bcb_rates
+        diff = abs((date - ref_date).value)
+        if diff < min_diff
+            min_diff = diff
+            closest_rate = rate
+        end
+    end
+    
+    return closest_rate
+end
+
 println("\n⏳ Gerando $n_loans empréstimos...")
 
 # 1. DATAS DE ORIGINAÇÃO
@@ -280,6 +298,18 @@ for (i, date) in enumerate(orig_dates)
 end
 
 println("  ✓ Taxas correlacionadas: $(round(minimum(rates), digits=2))% a $(round(maximum(rates), digits=2))%")
+
+# CALCULAR SPREAD SOBRE SELIC para capturar sensibilidade aos juros
+println("  ✓ Calculando spread sobre Selic para sensibilidade aos juros...")
+spread_over_selic = Float64[]
+
+for (i, date) in enumerate(orig_dates)
+    selic_at_origination = get_selic_rate(date)
+    spread = rates[i] - selic_at_origination
+    push!(spread_over_selic, spread)
+end
+
+println("  ✓ Spread sobre Selic: $(round(minimum(spread_over_selic), digits=2))% a $(round(maximum(spread_over_selic), digits=2))%")
 
 # 6. TIPOS DE EMPRÉSTIMO (mercado brasileiro)
 loan_types = String[]
@@ -537,6 +567,7 @@ loan_data = DataFrame(
     origination_date = orig_dates,
     maturity_date = orig_dates .+ Month.(loan_terms),
     interest_rate = round.(rates, digits=2),
+    spread_over_selic = round.(spread_over_selic, digits=2),  # Nova variável para sensibilidade aos juros
     loan_amount = round.(amounts, digits=0),
     loan_term = loan_terms,
     credit_score = credit_scores,
@@ -572,6 +603,7 @@ println("  🇧🇷 Total empréstimos: $(nrow(loan_data))")
 println("  📅 Período: $(minimum(orig_dates)) a $(maximum(orig_dates))")
 println("  💰 Valor médio: R\$$(round(Int, mean(loan_data.loan_amount)/1000))k")
 println("  📈 Taxa média: $(round(mean(loan_data.interest_rate), digits=1))%")
+println("  📊 Spread sobre Selic médio: $(round(mean(loan_data.spread_over_selic), digits=1))%")
 println("  ⏳ Prazo médio: $(round(Int, mean(loan_data.loan_term))) meses")
 println("  💼 Renda média: R\$$(round(Int, mean(loan_data.borrower_income)/1000))k")
 println("  🎯 Score médio: $(round(Int, mean(loan_data.credit_score)))")

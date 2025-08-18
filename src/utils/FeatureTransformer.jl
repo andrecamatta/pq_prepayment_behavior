@@ -40,6 +40,10 @@ function fit!(transformer::FeatureTransformer, data::LoanData)::FeatureTransform
         normalization_params[:interest_rate] = (mean(data.interest_rate), std(data.interest_rate))
     end
     
+    if :spread_over_selic in transformer.covariates
+        normalization_params[:spread_over_selic] = (mean(data.spread_over_selic), std(data.spread_over_selic))
+    end
+    
     # Learn credit score parameters
     credit_score_linear_params = nothing
     credit_score_quantiles = nothing
@@ -79,6 +83,11 @@ function transform(transformer::FeatureTransformer, data::LoanData)::DataFrame
     if :interest_rate in transformer.covariates && haskey(transformer.normalization_params, :interest_rate)
         mean_val, std_val = transformer.normalization_params[:interest_rate]
         df.interest_rate = (data.interest_rate .- mean_val) ./ std_val
+    end
+    
+    if :spread_over_selic in transformer.covariates && haskey(transformer.normalization_params, :spread_over_selic)
+        mean_val, std_val = transformer.normalization_params[:spread_over_selic]
+        df.spread_over_selic = (data.spread_over_selic .- mean_val) ./ std_val
     end
     
     # Apply credit score expansion
@@ -136,6 +145,11 @@ function transform_single(transformer::FeatureTransformer, data::LoanData, loan_
     if :interest_rate in transformer.covariates && haskey(transformer.normalization_params, :interest_rate)
         mean_val, std_val = transformer.normalization_params[:interest_rate]
         features[:interest_rate] = (data.interest_rate[loan_idx] - mean_val) / std_val
+    end
+    
+    if :spread_over_selic in transformer.covariates && haskey(transformer.normalization_params, :spread_over_selic)
+        mean_val, std_val = transformer.normalization_params[:spread_over_selic]
+        features[:spread_over_selic] = (data.spread_over_selic[loan_idx] - mean_val) / std_val
     end
     
     # Apply credit score expansion

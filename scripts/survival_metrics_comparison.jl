@@ -12,7 +12,9 @@ Pkg.activate(".")
 
 using CSV, DataFrames, Statistics, Random
 import StatsBase
-Random.seed!(42)
+seed_value = haskey(ENV, "JULIA_SEED") ? parse(Int, ENV["JULIA_SEED"]) : 42
+Random.seed!(seed_value)
+println("🎲 Usando seed: $seed_value")
 
 include("../src/PrepaymentModels.jl")
 using .PrepaymentModels
@@ -21,7 +23,7 @@ println("📊 COMPARAÇÃO DAS 3 MÉTRICAS PRINCIPAIS DE SURVIVAL")
 println(repeat("=", 60))
 
 # Dataset pequeno para teste rápido
-filepath = "data/official_based_data/brazilian_loans_2025-07-23_20-16.csv"
+filepath = "data/official_based_data/brazilian_loans_2025-08-18_19-12.csv"
 raw_data = CSV.read(filepath, DataFrame)
 
 # Amostra de 3000 empréstimos para análise robusta
@@ -47,6 +49,7 @@ function create_loan_data(df::DataFrame)
         df.origination_date,
         df.maturity_date,
         df.interest_rate,
+        df.spread_over_selic,  # Nova variável para sensibilidade aos juros
         df.loan_amount,
         df.loan_term,
         df.credit_score,
@@ -62,16 +65,17 @@ end
 loan_train = create_loan_data(train_data)
 loan_test = create_loan_data(test_data)
 
-# Conjunto expandido de covariáveis (credit_score readicionado com tratamento não-linear)
+# Covariáveis otimizadas (eliminando interest_rate para resolver multicolinearidade)
 covariates = [
-    :interest_rate,
-    :credit_score,  # READICIONADO: Com quantile binning para tratar não-linearidade
+    :spread_over_selic,  # Sensibilidade aos juros - capture refinancing incentive
+    :credit_score,       # Com quantile binning para tratar não-linearidade
     :loan_amount_log,
     :loan_term,
     :dti_ratio,
     :borrower_income_log,
     :has_collateral
     # Dummies para loan_type serão adicionadas automaticamente na função _prepare_survival_data
+    # REMOVIDO: :interest_rate (causava multicolinearidade com spread_over_selic)
 ]
 
 println("📋 Usando ", length(covariates), " covariáveis principais: ", covariates)
