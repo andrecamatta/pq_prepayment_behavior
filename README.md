@@ -70,22 +70,50 @@ julia --project=. scripts/export_to_excel.jl
 
 ### 3. Comparação Robusta de Modelos
 
-Para executar uma análise completa comparando todos os modelos com **validação out-of-sample**:
+Para executar uma análise completa comparando todos os 4 modelos de sobrevivência:
 
 ```bash
 julia --project=. scripts/survival_metrics_comparison.jl
 ```
 
+**O que este script faz:**
+
+1. **📊 Carrega os dados brasileiros** gerados no passo anterior
+2. **🔄 Divide amostra aleatória** (3000 empréstimos: 70% treino / 30% teste)
+3. **🏋️ Treina os 4 modelos** usando apenas dados de treino:
+   - Modelo Cox (Proportional Hazards)
+   - Modelo Weibull MLE com regularização L2
+   - Modelo Log-Normal MLE com regularização L2
+   - Modelo Bernoulli-Beta otimizado
+4. **📈 Avalia performance** em dados de teste (out-of-sample)
+5. **🏆 Ranking dos modelos** por critério ponderado
+
+**Covariáveis utilizadas (7 variáveis):**
+- `spread_over_selic`: Sensibilidade aos juros vs refinanciamento
+- `credit_score`: Score Serasa com binning por quantis
+- `loan_amount_log`: Valor do empréstimo (log-transformado)
+- `loan_term`: Prazo em meses
+- `dti_ratio`: Debt-to-income ratio
+- `borrower_income_log`: Renda do mutuário (log-transformada)
+- `has_collateral`: Dummy para presença de garantia
+
 **Pipeline de Validação:**
-- 🔄 **Split 70/30**: 2100 treino / 900 teste
-- 🎯 **Treino**: Apenas dados de treino (sem data leakage)
-- 📊 **Avaliação**: Métricas calculadas apenas em dados de teste
-- ⚖️ **Regularização L2**: Comparação justa entre modelos MLE
+- 🔄 **Split 70/30**: 2100 treino / 900 teste (sem data leakage)
+- 🎯 **Treino**: Modelos ajustados apenas em dados de treino
+- 📊 **Avaliação**: Métricas calculadas exclusivamente em dados de teste
+- ⚖️ **Regularização L2**: Comparação justa entre modelos MLE (λ=0.01)
 
 **Métricas Out-of-Sample:**
-- **C-Index**: Discriminação entre eventos (0.5-1.0, maior = melhor)
-- **Brier Score**: Calibração probabilística (0-1, menor = melhor)
-- **Calibration Error**: Viés sistemático (0-1, menor = melhor)
+- **C-Index**: Capacidade de discriminação (0.5-1.0, maior = melhor)
+- **Brier Score**: Acurácia das probabilidades (0-1, menor = melhor)
+- **Calibration Error**: Qualidade da calibração (0-1, menor = melhor)
+- **Score Final**: Média ponderada (Brier 50% + Calibração 30% + C-Index 20%)
+
+**Saída esperada:**
+```
+🏆 RANKINGS POR MÉTRICA
+🎯 MODELO RECOMENDADO: [Melhor modelo baseado no critério ponderado]
+```
 
 
 ## 🏗️ Estrutura do Projeto
