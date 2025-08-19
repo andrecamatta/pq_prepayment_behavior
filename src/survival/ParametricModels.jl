@@ -4,7 +4,7 @@ Inclui Weibull, Log-normal, Log-logístico com covariáveis
 """
 
 using LinearAlgebra: dot
-using SpecialFunctions: loggamma, logbeta, erf, erfc
+using SpecialFunctions: loggamma, logbeta, erf, erfc, beta_inc
 using Optim: optimize, BFGS, NelderMead, converged, minimizer
 using Optim
 using Statistics: mean, std, quantile
@@ -111,9 +111,9 @@ function _fit_weibull_model(data::DataFrame, covariates::Vector{Symbol},
     X = _build_design_matrix(data, covariates)
     p = size(X, 2)
     
-    # Initial parameter guess - valores iniciais razoáveis
+    # Inicialização simples (reverter para valores que funcionavam)
     β₀ = zeros(p)
-    β₀[1] = 3.0  # Intercept inicial razoável para scale ~20 meses
+    β₀[1] = 3.0  # Intercept inicial razoável para scale ~20 meses  
     if p > 1
         β₀[2:end] .= -0.001  # Coeficientes pequenos para covariáveis
     end
@@ -126,7 +126,7 @@ function _fit_weibull_model(data::DataFrame, covariates::Vector{Symbol},
     
     objective(θ) = begin
         try
-            if θ[end] <= 0.001  # Evitar σ muito pequeno
+            if θ[end] <= 0.01   # Evitar σ muito pequeno (relaxado)
                 return 1e6
             end
             ll = _weibull_loglikelihood(θ, data, X)
@@ -137,8 +137,8 @@ function _fit_weibull_model(data::DataFrame, covariates::Vector{Symbol},
         end
     end
     
-    # Otimização com constraints
-    lower_bounds = vcat(fill(-Inf, p), 0.001)  # σ > 0.001
+    # Otimização com constraints mais relaxados
+    lower_bounds = vcat(fill(-Inf, p), 0.01)   # σ > 0.01 (menos restritivo)
     upper_bounds = fill(Inf, p + 1)
     
     # Inicializar variáveis de resultado
@@ -147,18 +147,56 @@ function _fit_weibull_model(data::DataFrame, covariates::Vector{Symbol},
     ll = _weibull_loglikelihood(θ₀, data, X)
     
     try
-        # Use simpler optimization for speed
-        result = optimize(objective, θ₀, BFGS(), Optim.Options(iterations=50))
+        # Múltiplas estratégias de otimização (Nível 2)
+        best_ll = ll
+        best_θ = θ₀
         
-        if converged(result)
-            θ_opt = minimizer(result)
-            β_hat = θ_opt[1:p]
-            σ_hat = max(0.001, θ_opt[end])  # Ensure positive σ
-            ll = -minimum(result)
-            println("      ✅ MLE convergiu!")
-        else
-            println("      ⚠️  MLE não convergiu, usando valores iniciais")
+        # Strategy 1: Nelder-Mead (robusto)
+        result1 = optimize(objective, θ₀, NelderMead(), Optim.Options(iterations=300))
+        if converged(result1) && -minimum(result1) > best_ll
+            best_ll = -minimum(result1)
+            best_θ = minimizer(result1)
+            println("      ✅ Nelder-Mead convergiu! LL=$(round(best_ll, digits=2))")
         end
+        
+        # Strategy 2: BFGS como backup (se Nelder-Mead falhou)
+        if best_ll <= ll + 1.0  # Se não melhorou significativamente
+            try
+                result2 = optimize(objective, θ₀, BFGS(), Optim.Options(iterations=100))
+                if converged(result2) && -minimum(result2) > best_ll
+                    best_ll = -minimum(result2)
+                    best_θ = minimizer(result2)
+                    println("      ✅ BFGS backup convergiu! LL=$(round(best_ll, digits=2))")
+                end
+            catch
+                # BFGS pode falhar, continuar com Nelder-Mead result
+            end
+        end
+        
+        # Strategy 3: L-BFGS-B como último recurso
+        if best_ll <= ll + 1.0
+            try
+                result3 = optimize(objective, lower_bounds, upper_bounds, θ₀, Fminbox(LBFGS()), 
+                                 Optim.Options(iterations=150))
+                if converged(result3) && -minimum(result3) > best_ll
+                    best_ll = -minimum(result3)
+                    best_θ = minimizer(result3)
+                    println("      ✅ L-BFGS-B convergiu! LL=$(round(best_ll, digits=2))")
+                end
+            catch
+                # L-BFGS-B pode falhar também
+            end
+        end
+        
+        # Aplicar melhor resultado encontrado
+        if best_ll > ll + 0.1  # Melhoria mínima requerida
+            β_hat = best_θ[1:p]
+            σ_hat = max(0.01, best_θ[end])
+            ll = best_ll
+        else
+            println("      ⚠️  MLE não convergiu adequadamente, usando valores iniciais melhorados")
+        end
+        
     catch e
         println("      ❌ Erro na otimização: $e")
         println("      🔄 Usando valores iniciais")
@@ -247,15 +285,15 @@ function _fit_lognormal_model(data::DataFrame, covariates::Vector{Symbol},
         best_ll = ll
         best_θ = θ₀
         
-        # Strategy 1: BFGS with limited iterations
-        result1 = optimize(objective, θ₀, BFGS(), Optim.Options(iterations=100, g_tol=1e-6))
+        # Strategy 1: BFGS with relaxed tolerance
+        result1 = optimize(objective, θ₀, BFGS(), Optim.Options(iterations=150, g_tol=1e-4))
         if converged(result1) && -minimum(result1) > best_ll
             best_ll = -minimum(result1)
             best_θ = minimizer(result1)
         end
         
-        # Strategy 2: Nelder-Mead as backup
-        result2 = optimize(objective, θ₀, NelderMead(), Optim.Options(iterations=200))
+        # Strategy 2: Nelder-Mead with more iterations
+        result2 = optimize(objective, θ₀, NelderMead(), Optim.Options(iterations=300))
         if converged(result2) && -minimum(result2) > best_ll
             best_ll = -minimum(result2)
             best_θ = minimizer(result2)
@@ -707,8 +745,40 @@ function _bernoulli_beta_loglikelihood(β::Vector{Float64}, γ_α::Vector{Float6
                 ll += log(max(1e-15, 1 - p_prepay))
             end
         else
-            # No event (censored) - use Bernoulli probability of no prepayment
-            ll += log(max(1e-15, 1 - p_prepay))
+            # --- Início da Lógica Corrigida para Censura ---
+
+            # 1. Obter a duração do contrato para a observação `i`.
+            loan_idx = findfirst(data.loan_id .== survival_df.loan_id[i])
+            contract_length = !isnothing(loan_idx) ? Float64(data.loan_term[loan_idx]) : 36.0
+
+            # 2. Verificar se a censura ocorre após o fim do contrato.
+            #    Nesse caso, a probabilidade de pré-pagar depois é zero, e a lógica antiga se aplica.
+            if survival_df.time[i] >= contract_length
+                ll += log(max(1e-15, 1 - p_prepay))
+            else
+                # 3. Se a censura ocorre DURANTE o contrato, calcular a contribuição completa.
+
+                # 3a. Calcular os parâmetros da distribuição Beta (α_i, β_i) para a observação `i`.
+                log_α = dot(x_i, γ_α)
+                log_β_param = dot(x_i, γ_β)
+                α_i = exp(min(5.0, max(-5.0, log_α)))
+                β_i = exp(min(5.0, max(-5.0, log_β_param)))
+                
+                # 3b. Calcular o tempo relativo de censura `u_i`.
+                u_i = survival_df.time[i] / contract_length
+                u_i = max(0.001, min(0.999, u_i)) # Manter no intervalo (0, 1)
+
+                # 3c. Calcular a função de sobrevivência da Beta no ponto u_i.
+                #     P(T > u_i) = 1 - CDF_Beta(u_i; α_i, β_i)
+                survival_beta = 1.0 - _beta_cdf(u_i, α_i, β_i)
+
+                # 3d. Calcular a verossimilhança combinada para a observação censurada.
+                likelihood_censored = (1 - p_prepay) + p_prepay * survival_beta
+
+                # 3e. Adicionar a contribuição à log-verossimilhança total.
+                ll += log(max(1e-15, likelihood_censored))
+            end
+            # --- Fim da Lógica Corrigida para Censura ---
         end
         
         # Check for numerical issues
@@ -847,40 +917,22 @@ end
 
 function _beta_cdf(x::Float64, α::Float64, β::Float64)::Float64
     """
-    Calculate CDF of Beta distribution using incomplete beta function
-    CDF_Beta(x; α, β) = I_x(α, β) where I_x is the regularized incomplete beta function
+    Calculate CDF of Beta distribution using the regularized incomplete beta function I_x(α, β).
+    Relies on a robust implementation from SpecialFunctions.jl.
     """
     if x <= 0.0
         return 0.0
     elseif x >= 1.0
         return 1.0
     elseif α <= 0.0 || β <= 0.0
-        return 0.5  # Fallback for invalid parameters
+        @warn "Beta CDF called with invalid parameters α=$α, β=$β. Returning fallback."
+        return 0.5 # Fallback for invalid parameters
     else
-        # Use efficient approximation for Beta CDF
-        # For numerical stability, use the relationship with gamma functions
+        # I_x(α, β) = P(X ≤ x) where X ~ Beta(α, β)
         try
-            # Simple numerical integration for Beta CDF (Trapezoidal rule)
-            # This is a basic implementation - for production, use SpecialFunctions.jl
-            n_steps = 100
-            dx = x / n_steps
-            integral = 0.0
-            
-            for i in 1:n_steps
-                xi = (i - 0.5) * dx
-                if xi > 0 && xi < 1
-                    # Beta PDF: f(x) = x^(α-1) * (1-x)^(β-1) / B(α,β)
-                    # where B(α,β) = Γ(α)Γ(β)/Γ(α+β)
-                    log_pdf = (α - 1) * log(xi) + (β - 1) * log(1 - xi) - 
-                             (loggamma(α) + loggamma(β) - loggamma(α + β))
-                    if isfinite(log_pdf)
-                        integral += exp(log_pdf) * dx
-                    end
-                end
-            end
-            
-            return min(1.0, max(0.0, integral))
-        catch
+            return beta_inc(α, β, x)[1]  # beta_inc returns (I_x, 1-I_x)
+        catch e
+            @warn "Error calculating beta_inc: $e. Using fallback."
             # Fallback: simple approximation based on mean
             mean_beta = α / (α + β)
             return x < mean_beta ? 0.3 : 0.7
