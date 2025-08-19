@@ -1,15 +1,21 @@
 # Modelagem de Pré-pagamento Bancário Brasileiro
 
-Implementação robusta de modelos de sobrevivência para análise de comportamento de pré-pagamento em empréstimos bancários brasileiros usando Julia.
+Implementação robusta de modelos de sobrevivência para análise de comportamento de pré-pagamento em empréstimos bancários brasileiros usando Julia, com **sensibilidade aos juros via spread sobre Selic** e **todos os 4 modelos convergindo corretamente**.
 
 ## 📋 Visão Geral
 
 Este projeto implementa modelos estatísticos avançados para prever o comportamento de pré-pagamento em empréstimos bancários brasileiros, utilizando técnicas de análise de sobrevivência com **validação out-of-sample rigorosa**. 
 
-### 📊 **Modelos Implementados:**
-- **Modelo Cox** (Partial Likelihood)
-- **Modelos Paramétricos com Regularização L2** (Weibull, Log-Normal)
-- **Modelo Bernoulli-Beta Otimizado** (MLE + Regularização)
+### 🏆 **Inovações Técnicas:**
+- **Sensibilidade aos Juros**: `spread_over_selic` captura incentivos de refinanciamento
+- **Eliminação de Multicolinearidade**: Remoção de `interest_rate` para estabilidade numérica
+- **Convergência Robusta**: Múltiplas estratégias de otimização MLE
+- **Validação Rigorosa**: Comparação out-of-sample entre todos os modelos
+
+### 📊 **Modelos Implementados (Todos Funcionando):**
+- **Modelo Bernoulli-Beta** (MLE + Regularização)
+- **Modelo Cox** (Partial Likelihood) 
+- **Modelos Paramétricos** (Weibull, Log-Normal) com Regularização L2
 
 ## 🚀 Instalação e Configuração
 
@@ -48,6 +54,7 @@ julia --project=. scripts/create_brazilian_loan_data.jl
 
 Este script gera dados sintéticos realistas baseados em fontes brasileiras oficiais:
 - **Taxas de juros**: BCB Focus (Selic e spreads bancários)
+- **Spread sobre Selic**: Captura incentivos de refinanciamento
 - **Rendas**: IBGE PNAD Contínua (distribuição real brasileira)
 - **Scores de crédito**: Serasa (0-1000, distribuição atualizada)
 - **Geografia**: IBGE (proporção populacional por estado)
@@ -79,6 +86,7 @@ julia --project=. scripts/survival_metrics_comparison.jl
 - **C-Index**: Discriminação entre eventos (0.5-1.0, maior = melhor)
 - **Brier Score**: Calibração probabilística (0-1, menor = melhor)
 - **Calibration Error**: Viés sistemático (0-1, menor = melhor)
+
 
 ## 🏗️ Estrutura do Projeto
 
@@ -173,8 +181,9 @@ processed_data = preprocess_loan_data(loan_data,
                                     max_dti_ratio=0.50,
                                     min_credit_score=500)
 
-# Treinar modelo Cox
-covariates = [:interest_rate, :credit_score]
+# Treinar modelo Cox com covariáveis otimizadas
+covariates = [:spread_over_selic, :credit_score, :loan_amount_log, 
+              :loan_term, :dti_ratio, :borrower_income_log, :has_collateral]
 cox_model = fit_cox_model(processed_data, covariates=covariates)
 
 # Fazer predições
