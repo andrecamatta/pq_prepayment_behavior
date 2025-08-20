@@ -101,7 +101,7 @@ Este documento descreve o dataset sintético de empréstimos bancários brasilei
 - **Prazo Médio**: 29 meses
 - **Renda Média**: R$ 11.000/mês
 - **Score Médio**: 586 pontos
-- **Taxa de Pré-pagamento**: 76,7%
+- **Taxa de Pré-pagamento**: Calibrada para mercado brasileiro
 
 ### Distribuição de Rendas (Corrigida - Realística)
 - **Renda Mediana**: R$ 6.062
@@ -112,29 +112,29 @@ Este documento descreve o dataset sintético de empréstimos bancários brasilei
 
 ### Por Tipo de Empréstimo
 
-| Tipo | Quantidade | Taxa Média | Valor Médio | Pré-pagamento |
-|------|------------|------------|-------------|---------------|
-| Crédito Pessoal | 22.690 (45%) | 35,4% | R$ 14k | 77,8% |
-| Cartão de Crédito | 12.296 (25%) | 35,5% | R$ 14k | 80,4% |
-| Cheque Especial | 7.574 (15%) | 35,5% | R$ 14k | 80,2% |
-| CDC Veículo | 7.440 (15%) | 35,5% | R$ 13k | 63,8% |
+| Tipo | Quantidade | Taxa Média | Valor Médio | Características |
+|------|------------|------------|-------------|-----------------|
+| Crédito Pessoal | 22.690 (45%) | 35,4% | R$ 14k | Comportamento baseline |
+| Cartão de Crédito | 12.296 (25%) | 35,5% | R$ 14k | Rotativo, alta volatilidade |
+| Cheque Especial | 7.574 (15%) | 35,5% | R$ 14k | Rotativo moderado |
+| CDC Veículo | 7.440 (15%) | 35,5% | R$ 13k | Garantia real, conservador |
 
 ### Por Região (Top 5)
 
-| Estado | Quantidade | Renda Média | Pré-pagamento |
-|--------|------------|-------------|---------------|
-| SP | 11.025 | R$ 11k | 77,5% |
-| MG | 5.007 | R$ 11k | 77,7% |
-| RJ | 4.039 | R$ 11k | 76,7% |
-| BA | 3.445 | R$ 11k | 75,1% |
-| RS | 2.673 | R$ 11k | 76,4% |
+| Estado | Quantidade | Renda Média | Características |
+|--------|------------|-------------|-----------------|
+| SP | 11.025 | R$ 11k | Região mais dinâmica |
+| MG | 5.007 | R$ 11k | Economia diversificada |
+| RJ | 4.039 | R$ 11k | Centro financeiro |
+| BA | 3.445 | R$ 11k | Economia regional |
+| RS | 2.673 | R$ 11k | Agronegócio forte |
 
 ### Sazonalidade Brasileira
 
 O modelo incorpora padrões sazonais específicos do Brasil:
-- **Novembro-Janeiro**: 60% maior pré-pagamento (13º salário, bônus)
-- **Junho-Julho**: 30% maior (férias, décimo terceiro parcial)
-- **Março-Abril**: 20% maior (restituição IR, planejamento)
+- **Novembro-Janeiro**: Efeito 13º salário e bônus de fim de ano
+- **Junho-Julho**: Período de férias e planejamento financeiro
+- **Março-Abril**: Restituição de IR e reorganização fiscal
 
 ---
 
@@ -196,8 +196,9 @@ smm = 1 - (1 - annual_prepayment_rate)^(1/12)
 
 ### Scripts
 - `scripts/create_brazilian_loan_data.jl` - Geração do dataset
+- `scripts/brazilian_loan_eda.jl` - Análise exploratória completa
 - `scripts/export_to_excel.jl` - Exportação para Excel
-- `scripts/example_analysis.jl` - Análise exemplo
+- `scripts/survival_metrics_comparison.jl` - Comparação de modelos
 
 ### Dados
 - `data/official_based_data/brazilian_loans_*.csv` - Dataset principal

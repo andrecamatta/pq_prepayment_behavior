@@ -157,8 +157,6 @@ pq_prepayment_behavior/
 │   ├── export_to_excel.jl              # Exportação Excel
 │   └── survival_metrics_comparison.jl   # Comparação out-of-sample
 ├── test/                        # Testes unitários
-├── experiments/                 # [Arquivo] Scripts históricos removidos
-│   └── README.md               # Documentação de scripts experimentais
 ├── docs/                        # Documentação
 └── data/                        # Dados gerados (não versionados)
 ```
