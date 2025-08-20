@@ -60,7 +60,25 @@ Este script gera dados sintéticos realistas baseados em fontes brasileiras ofic
 - **Geografia**: IBGE (proporção populacional por estado)
 - **Comportamento**: CDC Art. 52 + sazonalidade brasileira (13º, férias)
 
-### 2. Exportação para Excel
+**Taxa de pré-pagamento calibrada**: O modelo produz taxas realísticas para o mercado brasileiro após extensiva calibração de parâmetros comportamentais.
+
+### 2. Análise Exploratória de Dados (EDA)
+
+Para executar uma análise exploratória completa dos dados brasileiros:
+
+```bash
+julia --project=. scripts/brazilian_loan_eda.jl
+```
+
+**O que este script faz:**
+- 📊 **Estatísticas descritivas** completas do dataset brasileiro
+- 📈 **Visualizações** (10 gráficos salvos em `results/eda_plots/`)
+- 🏦 **Análise por modalidade** (Crédito Pessoal, Cartão, CDC Veículo, Cheque Especial)
+- 🌍 **Análise regional** por estado brasileiro
+- 📋 **Segmentação por risco** e perfil de pré-pagamento
+- 💾 **Relatório resumido** em `results/eda_plots/analise_resumo.txt`
+
+### 3. Exportação para Excel
 
 Para converter os dados CSV para formato Excel com múltiplas planilhas:
 
@@ -68,7 +86,7 @@ Para converter os dados CSV para formato Excel com múltiplas planilhas:
 julia --project=. scripts/export_to_excel.jl
 ```
 
-### 3. Comparação Robusta de Modelos
+### 4. Comparação Robusta de Modelos
 
 Para executar uma análise completa comparando todos os 4 modelos de sobrevivência:
 
@@ -135,6 +153,7 @@ pq_prepayment_behavior/
 │       └── ValidationUtils.jl   # Validação de modelos
 ├── scripts/                     # Scripts de execução
 │   ├── create_brazilian_loan_data.jl    # Geração de dados brasileiros
+│   ├── brazilian_loan_eda.jl           # Análise exploratória brasileira
 │   ├── export_to_excel.jl              # Exportação Excel
 │   └── survival_metrics_comparison.jl   # Comparação out-of-sample
 ├── test/                        # Testes unitários
@@ -169,6 +188,23 @@ O projeto utiliza métricas estatísticas rigorosas para comparação de modelos
 - **Brier Score** (0-1): Acurácia das probabilidades preditas
 - **Calibration Error** (0-1): Qualidade da calibração
 
+## 🎯 Calibração do Modelo de Pré-pagamento
+
+O projeto implementa um **modelo comportamental brasileiro** com calibração rigorosa:
+
+### Características do Modelo
+- **Fatores comportamentais**: Sunk cost fallacy, desconto hiperbólico, stress financeiro
+- **Sazonalidade brasileira**: 13º salário, férias, planejamento fiscal
+- **Regulamentação**: Efeitos do CDC (sem penalidade de pré-pagamento)
+- **Segmentação**: Diferentes comportamentos por modalidade de crédito
+- **Sensibilidade**: Resposta a diferenciais de taxa de juros
+
+### Modalidades Implementadas
+- **CDC Veículo**: Comportamento mais conservador (garantia real)
+- **Crédito Pessoal**: Comportamento baseline
+- **Cheque Especial**: Comportamento rotativo moderado
+- **Cartão de Crédito**: Maior volatilidade, alta rolagem de dívida
+
 ## 🔧 Personalização
 
 ### Adicionando Novos Modelos
@@ -183,6 +219,7 @@ O projeto utiliza métricas estatísticas rigorosas para comparação de modelos
   - Distribuições de variáveis
   - Período de análise
   - Tamanho da amostra
+  - Parâmetros comportamentais
 
 ## 📚 Dependências Principais
 

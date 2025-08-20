@@ -34,4 +34,4 @@ Thumbs.db
 
 # Claude Code
 CLAUDE.md
-.claude/
+.claude/results/

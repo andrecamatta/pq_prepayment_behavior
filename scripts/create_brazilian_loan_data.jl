@@ -442,9 +442,9 @@ for i in 1:n_loans
     
     # 5. TIPO DE EMPRÉSTIMO (efeito brasileiro)
     type_mult = if loan_types[i] == "Cartão de Crédito" 
-        1.5  # Mais volátil - rotativo
+        1.25 # Volátil, mas com alta rolagem de dívida
     elseif loan_types[i] == "Cheque Especial"
-        1.3  # Volátil
+        1.15 # Levemente mais propenso a quitação
     elseif loan_types[i] == "CDC Veículo"
         0.6  # Mais estável - garantia
     else  # Crédito Pessoal
@@ -503,10 +503,10 @@ for i in 1:n_loans
     macro_mult = unemployment_mult * gdp_mult * credit_mult_macro
     
     # 10. DIREITO CDC Art. 52 (sem penalidade = mais pré-pagamento)
-    cdc_mult = 1.3  # CDC facilita pré-pagamento
+    cdc_mult = 1.08 # CDC facilita pré-pagamento (efeito limitado)
     
     # APR ANUAL brasileiro com fatores comportamentais
-    base_apr = 0.12  # 12% base
+    base_apr = 0.02  # 2% base
     total_apr = base_apr * (1 + rate_incentive) * seasoning_mult * urgency_mult *
                 credit_mult * type_mult * dti_mult * collateral_mult * 
                 region_mult * macro_mult * cdc_mult
@@ -523,11 +523,11 @@ for i in 1:n_loans
         # Efeito sazonal brasileiro com viés comportamental
         current_month = (Dates.month(orig_dates[i]) + month - 1) % 12 + 1
         seasonal_mult = if current_month in [11, 12, 1]  # Nov-Jan (13º salário)
-            1.6  # Mais forte - dinheiro "extra" gera impulso
+            1.25 # Moderado - dinheiro "extra" calibrado
         elseif current_month in [6, 7]  # Jun-Jul (férias, 2º férias)
-            1.3  # Impulso de férias
+            1.15  # Leve impulso de férias
         elseif current_month in [3, 4]  # Mar-Abr (IR, planejamento)
-            1.2  # Planejamento financeiro
+            1.1  # Leve planejamento financeiro
         else
             1.0
         end
